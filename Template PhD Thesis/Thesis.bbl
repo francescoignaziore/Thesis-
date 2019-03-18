@@ -1,0 +1,30 @@
+\begin{thebibliography}{5}
+
+\bibitem[Azzalini(2001)]{azzalini01}
+Azzalini, A. (2001) \emph{Inferenza Statistica. Una Presentazione Basata sul
+  Concetto di Verosimiglianza}.
+\newblock Milano: Springer-Verlag Italia.
+
+\bibitem[Bartlett(1953)]{bart53}
+Bartlett, M.~S. (1953) Approximate confidence intervals. {II}. {M}ore than one
+  unknown parameter.
+\newblock \emph{Biometrika} \textbf{40}, 306--317.
+
+\bibitem[DiCiccio and Stern(1993)]{dicicciostern93}
+DiCiccio, T.~J. and Stern, S.~E. (1993) An adjustment to profile likelihood
+  based on observed information.
+\newblock Technical report, Department of Statistics, Stanford University.
+
+\bibitem[Kosmidis(2016)]{brglm2}
+Kosmidis, I. (2016) \emph{\emph{\texttt{brglm2}}: Estimation and inference for
+  generalized linear models using explicit and implicit methods for bias
+  reduction}.
+\newblock \newline\texttt{https://github.com/ikosmidis/brglm2}.
+
+\bibitem[Stafford(1992)]{staf92}
+Stafford, J.~E. (1992) \emph{Symbolic Computation and the Comparison of
+  Traditional and Robust Test Statistics \emph{(unpublished doctoral
+  dissertation)}}.
+\newblock University of Toronto, Canada.
+
+\end{thebibliography}

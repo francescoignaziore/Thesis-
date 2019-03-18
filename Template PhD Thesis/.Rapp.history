@@ -1,0 +1,1483 @@
+library(panelMPL)
+ls()
+rm(list=ls())#
+library(survival)#
+library(numDeriv)#
+#
+setwd("~/Documents/PhD/3rd year/SurvivalModelsMPL/Code Clo")#
+dyn.load("MPLsurv.so")#
+#
+#Find values for common varsigma, given parameters (lambda_i, psi) and given probability of #
+# censoring#
+#X matrix of covariates nx(k0-1) #
+#beta vector px1#
+varsigma.cens <-function(psi, lambda, X, panel, prob.cens){#
+  n <- nrow(X)                #sum(T_i)#
+  N <- length(unique(panel))  #N#
+  T_i <- tapply(rep(1,nrow(X)), panel, sum)   #T_i#
+  lambda.v <- as.vector(lambda)#
+  xi <- psi[1]#
+  beta <- psi[-1]#
+  xb <- X %*% beta#
+  eta <- exp(-(xb + lambda.v[panel]))#
+  lower <- 0.0001#
+  upper <- 1000#
+  # "fun" for function to be solved in uniroot, other letters for computing probabilities of#
+  # censoring for each stratum#
+  f1 <-function(varsigma, option="fun") {#
+    prob <- rep(0, n)#
+    for (i in 1:n) {#
+      int <- function(t) {#
+        varsigma*exp(-varsigma*t) * exp(-(eta[i]*t)^xi)#
+      }	                      #
+      prob[i] <- integrate(int,0,Inf)$value     #vector of dim=sum(T_i)#
+    }#
+    if (option=="fun") {#
+      sol = mean(prob)-prob.cens#
+    }#
+    else { #
+      sol=prob ## p_ij#
+    }#
+    return(sol)#
+  }#
+  varsigma <- uniroot(f1, c(lower,upper))$root#
+  prob = f1(varsigma, option="a")#
+  prob.str = tapply(prob, panel, mean)#
+  return(list(varsigma=varsigma, mean.prob=mean(prob), prob.ij=prob, prob.str=prob.str))#
+}#
+#
+# new panel indicator#
+get.g<- function(g)#
+{ #
+  n<- length(g)#
+  out<- rep(0,n)#
+  uni<- unique(g)#
+  N<- length(unique(g))#
+  for(i in 1:N) {#
+    cond<- (g==uni[i])#
+    ind<- (1:n)[cond]#
+    out[ind]<-i#
+  }#
+  return(out)#
+}#
+#
+### DATA SIMULATION in VECTOR form - no list#
+simu_weib <- function(X, panel, psi, lambda=NULL, varsigma=1, Nsim=1, seed=123)   #
+{#
+  if (is.null(seed)) seed=.Random.seed#
+  set.seed(seed)#
+  n <- nrow(X)                #sum(T_i)#
+  N <- length(unique(panel))  #N#
+  T_i <- tapply(rep(1,n), panel, sum)   #T_i#
+  # alpha tunes the censoring times' distribution and the cluster-specific intercepts#
+  varsigma.v <- as.vector(varsigma)#
+  if((length(varsigma.v)!=1)&(length(varsigma.v)!=N)) stop("Wrong length of varsigma!")#
+  if(is.null(lambda)) lambda <- rnorm(N, mean=varsigma.v, sd=sqrt(0.045)) ### CHECK#
+  lambda.v <- as.vector(lambda)#
+  xi <- psi[1]#
+  beta <- psi[-1]#
+  if(length(beta)!=ncol(X)) stop("Wrong length of beta!")#
+  if(length(lambda.v)!=N) stop("Wrong length of lambda!")#
+  xb <- X %*% beta#
+  eta <- exp(-(xb + lambda.v[panel])) #vector n x 1#
+  ytilde <- matrix(rweibull(n*Nsim, shape=xi, scale=rep(1/eta, Nsim)), ncol=Nsim)#
+  # matrix n x Nsim#
+  # generate censoring times matrix n x Nsim#
+  if (length(varsigma.v)==1) {#
+    censtimes <- matrix(rexp(n*Nsim, rate=varsigma.v), ncol=Nsim)#
+  }#
+  else {#
+    censtimes <- matrix(rexp(n*Nsim, rate=rep(varsigma.v[panel], Nsim)), ncol=Nsim)#
+  }#
+  # data#
+  # non-censoring indicator#
+  delta <- matrix(as.numeric(censtimes > ytilde), ncol=Nsim)#
+  y <- matrix(ifelse(as.vector(delta)==1, as.vector(ytilde), as.vector(censtimes)), ncol=Nsim)#
+  attr(y,"psi")=psi#
+  attr(y,"xi")=xi#
+  attr(y,"beta")=beta#
+  attr(y,"lambda")=lambda.v#
+  attr(y,"varsigma")=varsigma.v#
+  attr(y,"Nsim")=Nsim#
+  attr(y,"seed")=seed#
+  attr(y,"ytilde")=ytilde#
+  attr(y,"censtimes")=censtimes#
+  attr(y,"delta")=delta#
+  attr(y,"X")=X#
+  attr(y, "panel")=panel#
+  attr(y,"T_i")=T_i#
+  #matrix of dimension (nxNsim)#
+  return(y)  #
+}#
+#
+# data synthesis#
+syn2 <- function(y, xi, panel) tapply(y^xi, panel, sum)    #sum_t (y_it)^xi#
+#
+### PROFILE LIK#
+# compute MLE for psi#
+# input y, delta, panel: vector n x 1#
+# input X: matrix n x (k0-1)#
+# input initial.val: vector k0 x 1#
+#
+# compute lambdahat_psi, for fixed psi=(xi, beta),  (Nx1)#
+lambdahat_psi <- function(par, y, delta, X, panel) {#
+  xi <- par[1]#
+  beta <- par[-1]#
+  if(length(beta)!=ncol(X)) stop("Wrong length of parameter psi!")#
+  xb <- X %*% beta # vector n x 1#
+  di. <- syn2(delta, xi=1, panel=panel) # vector Nx1#
+  s2 <- tapply(((y^xi)*exp(-xi*xb)), panel, sum) # vector Nx1#
+  est <- -(1/xi) * log(di./s2)           #
+  return(est)#
+}#
+#
+# constr estimates of nuisance with C#
+lambdahat_psiC <- function(psi, y, delta, X, panel) {   #
+  xi=psi[1]#
+  beta=psi[-1]#
+  N <- length(unique(panel))   ##N.inf#
+  T_i <- tapply(rep(1,nrow(X)), panel, sum)   #T_i#
+  .C("lambda_psi",#
+     as.integer(sum(T_i)),#
+     as.integer(N),#
+     as.integer(T_i),#
+     as.integer(max(T_i)),#
+     as.double(xi),#
+     as.double(beta),#
+     as.integer(length(beta)),#
+     as.double(y),#
+     as.double(X),       #X nxlength(beta)#
+     as.integer(delta),#
+     lambda=as.double(rep(0.0,N)))$lambda#
+}#
+#
+# compute l_(lambda_i, lambda_i)(theta), vector Nx1#
+l_ll <- function(par, lambda, y, delta, X, panel) {#
+  xi <- par[1]#
+  beta <- par[-1]#
+  xb <- X %*% beta # vector n x 1#
+  di. <- syn2(delta, xi=1, panel=panel) # vector Nx1#
+  s2 <- tapply(((y^xi)*exp(-xi*xb)), panel, sum) # vector Nx1#
+  l <- -(xi^2) * exp(-lambda*xi) * s2        # vector Nx1   #
+  return(l)#
+}#
+#
+# compute negative profile log-likelihood(psi) for random-censored data, psi=(xi, beta)#
+prof.lik<- function(par, y, delta, X, panel) {#
+  xi <- par[1]#
+  beta <- par[-1]#
+  if(length(beta)!=ncol(X)) stop("Wrong length of parameter psi!")#
+  xb <- X %*% beta # vector n x 1#
+  s1 <- sum(delta*xb) # scalar#
+  s2 <- tapply(((y^xi)*exp(-xi*xb)), panel, sum) # vector Nx1#
+  s3 <- sum(delta*log(y))  # scalar #
+  di. <- syn2(delta, xi=1, panel=panel) # vector Nx1#
+  d.. <- sum(di.) # scalar#
+  l= d..*(log(xi)-1)+(xi-1)*s3+sum(di.*log(di.))-sum(di.*log(s2))-xi*s1#
+  return(-l)#
+}#
+#
+# negative profile log-lik of scalar xi#
+prof.xi <- function(xi, y, delta, X, panel) {#
+  ncov<-ncol(X)#
+  beta.xi<-optim(rep(0,ncov), function(k) prof.lik(par=c(xi,k), y=y, delta=delta, X=X,#
+                                                   panel=panel), method="L-BFGS-B")$par#
+  prof.lik(c(xi,beta.xi), y, delta, X, panel)#
+}#
+#
+# compute  l_(lambda_i)(theta) (Nx1)#
+l_lambda <- function(par, lambda, y, delta, X, panel) {#
+  xi <- par[1]#
+  beta <- par[-1]#
+  if(length(beta)!=ncol(X)) stop("Wrong length of parameter psi!")#
+  xb <- X %*% beta # vector n x 1#
+  di. <- syn2(delta, xi=1, panel=panel) # vector Nx1#
+  s2 <- tapply(((y^xi)*exp(-xi*xb)), panel, sum) # vector Nx1#
+  l <- -(xi*di.) + xi*s2*exp(-lambda*xi)           #
+  return(l)#
+}#
+#
+# MPL with C, ystar and deltastar generated outside#
+MPLsurvC<-function(psi, y, delta, ystar, deltastar, X, panel, psihat, lambdahat) {#
+  xi=psi[1]#
+  beta=psi[-1]#
+  xihat=psihat[1]#
+  betahat=psihat[-1]#
+  N <- length(unique(panel))   ##N.inf#
+  T_i <- tapply(rep(1,nrow(X)), panel, sum)   #T_i#
+  R <- ncol(ystar)#
+  out<-.C("MPLsurvC",#
+          as.double(xi),#
+          as.double(beta),#
+          as.integer(length(beta)),#
+          as.double(X),       #X nxlength(beta)#
+          as.integer(N),#
+          as.integer(T_i),#
+          as.integer(sum(T_i)),#
+          as.integer(max(T_i)),#
+          as.double(y),#
+          as.integer(delta),#
+          as.double(ystar),      #matrix nxR#
+          as.integer(deltastar),#
+          as.integer(R),#
+          as.double(xihat),#
+          as.double(betahat),#
+          as.double(lambdahat),#
+          out=as.double(0.0))$out#
+  return(-out)#
+}#
+#
+#resample the censoring time (from the observed censored times) for those subjects who#
+#had an observed failure (delta_ij=1) #
+MC.condcens <- function(y, delta, Cobs, Sobs, seedu=NULL) {#
+  #   if (is.null(seedu)) seedu=.Random.seed#
+  #   set.seed(seedu)#
+  d.. <- sum(delta)#
+  time.int <- findInterval(y, c(0, Cobs-1e-8, Inf))#
+  surv <- c(1, Sobs)[time.int] #survival values at observed times#
+  surv[delta==1] <- surv[delta==1] * runif(d..)  #survival of new censoring times#
+  if(any(Sobs==0)) {#
+    breaks <- c(sort(Sobs), 1)#
+    km_time <- Cobs#
+  } #
+  else {#
+    breaks <- c(0,sort(Sobs), 1) #
+    km_time <- c(Cobs, Inf)#
+  }	#
+  surv.int <- findInterval(surv, breaks)#
+  cstar <- rev(km_time)[surv.int] #
+  cstar[delta==0] <- y[delta==0]#
+  return(cstar) # vector nx1#
+}	          	        #
+#
+#generate right-censored samples, where failure times are from Weibull distr. with parameters#
+#thetahat, censoring times are generated from the empirical conditional distribution of the#
+#observed censoring times, given that C>T#
+MCrepl <- function(R, psi, lambda, y, delta, X, panel, seedw=NULL, seedu=NULL)  {#
+  xi <- psi[1]#
+  beta <- psi[-1]#
+  lambda.v <- as.vector(lambda)#
+  N <- length(lambda.v)#
+  xb <- X %*% beta#
+  eta <- exp(-(xb + lambda.v[panel])) #vector n x 1#
+  # Kaplan-meier survival estimate for censoring#
+  km <-survfit(Surv(y,delta==0)~1,type="kaplan-meier")#
+  Cobs=km$time[km$n.event>0]#
+  Sobs=km$surv[km$n.event>0]#
+  MC <- replicate(R, MCsample(xi, eta, y, delta, Cobs, Sobs, seedw=seedw, seedu=seedu)) #
+  ## 2 matrices nxR#
+  return(MC)#
+}#
+#
+MCsample <- function(xi, eta, y, delta, Cobs, Sobs, seedw=NULL, seedu=NULL) {#
+  #   if (is.null(seedw)) seedw=.Random.seed#
+  #   set.seed(seedw)        #
+  # uncensored data from weibull distr.#
+  ytildestar <- rweibull(length(eta), shape=xi, scale=1/eta)  #nx1#
+  # generate cens times from conditional distr.#
+  cstar <- MC.condcens(y, delta, Cobs, Sobs, seedu=seedu) # nx1#
+  # Observe the minimum between the two times #
+  ystar <- pmin(ytildestar, cstar)#
+  deltastar <- as.numeric(cstar > ytildestar)#
+  return(list(ystar=ystar, deltastar=deltastar) )#
+}#
+#
+####################################################
+#
+survMPL.simula <- function(data, R=500)#
+{#
+  delta <- attr(data, "delta")#
+  X <- attr(data, "X")#
+  C <- attr(data, "censtimes")#
+  ytilde <- attr(data, "ytilde")#
+  panel <- attr(data, "panel")#
+  n <- dim(data)[1]                         #sum(T_i)#
+  Nsim <- dim(data)[2]#
+  N <- length(unique(panel))                #N#
+  T <- tapply(rep(1,nrow(X)), panel, sum)   #T_i#
+  ncov <- ncol(X)                           #Ncov#
+  # prepare output vectors#
+  xihat <- rep(NA, Nsim)#
+  xihat.SE <- rep(NA, Nsim)#
+  betahat <- matrix(NA,nrow=ncov,ncol=Nsim)#
+  betahat.SE <- matrix(NA,nrow=ncov,ncol=Nsim)#
+  xihatMPL <- rep(NA, Nsim)#
+  xihatMPL.SE <- rep(NA, Nsim)#
+  betahatMPL <- matrix(NA,nrow=ncov,ncol=Nsim)#
+  betahatMPL.SE <- matrix(NA,nrow=ncov,ncol=Nsim)#
+  Ninf <- rep(NA, Nsim)#
+  Ncens <- rep(NA, Nsim)#
+  mleErr<-0#
+  mleMPLerr<-0#
+  SEerr<-0#
+  SEmplErr<-0#
+  for (i in 1:Nsim)#
+  {#
+    ## i-th dataset#
+    data.i=data[,i]#
+    delta.ii=delta[,i]#
+    #    C.ii=C[,i]#
+    #    ytilde.i=ytilde[,i]#
+    di. <- syn2(delta.ii, 1, panel) ## vector Nx1#
+    Ncens[i] <- length(delta.ii)-sum(delta.ii)  # total number of censored obs.#
+    ## remove noninformative strata with all censored obs.#
+    cond<-!(di.==0)#
+    ind<-match(panel,names(cond))#
+    sele<-cond[ind]#
+    y.i<-data.i[sele]#
+    X.i<-as.matrix(X[sele,])#
+    delta.i<-delta.ii[sele]#
+    #    C.i=C.ii[sele]#
+    Ninf[i]<-sum(cond)#
+    ## new panel indicator#
+    panel.i<-get.g(panel[sele])#
+    if (i%%100==0) print(i) # monitor progress#
+    mle.out<-tryCatch(optim(c(1, rep(0,ncov)), prof.lik, y=y.i, delta=delta.i, X=X.i, #
+                            panel=panel.i, lower=c(0.001, rep(-Inf, ncov)), method="L-BFGS-B"), #
+                      error=function(e) print("error mle"))#
+    if(is.character(mle.out)) {#
+      xihat[i]<-NA#
+      xihat.SE[i]<-NA#
+      betahat[,i]<-rep(NA,ncov)#
+      betahat.SE[,i]<-rep(NA,ncov)#
+      xihatMPL[i]<-NA#
+      xihatMPL.SE[i]<-NA#
+      betahatMPL[,i]<-rep(NA,ncov)#
+      betahatMPL.SE[,i]<-rep(NA,ncov)#
+      mleErr<-mleErr+1#
+    }#
+    else {#
+      xihat[i]<-mle.out$par[1]#
+      betahat[,i]<-mle.out$par[-1]#
+      SE<-tryCatch(as.vector(diag(solve(hessian(prof.lik, x=mle.out$par, X=X.i, y=y.i, #
+                                                delta=delta.i, panel=panel.i)))^.5), #
+                   error=function(e) print("error SE"))#
+      if(is.character(SE))  {#
+        xihat.SE[i]<-NA#
+        betahat.SE[,i]<-rep(NA,ncov)#
+        SEerr<-SEerr+1#
+      }#
+      else {#
+        xihat.SE[i]<-SE[1]#
+        betahat.SE[,i]<-SE[-1]#
+      }#
+      psihat<-mle.out$par#
+      lambdahat<-lambdahat_psiC(psihat, y=y.i, delta=delta.i, X=X.i, panel=panel.i)#
+      # generate R Monte Carlo simulated data#
+      MC <- MCrepl(R=R, psi=psihat, lambda=lambdahat, y=y.i, delta=delta.i, X=X.i, #
+                   panel=panel.i)#
+      ystar.i <- matrix(unlist(MC["ystar",]), nrow=n, ncol=R, byrow=F)#
+      deltastar.i <- matrix(unlist(MC["deltastar",]), nrow=n, ncol=R, byrow=F)#
+      MPL.out<-tryCatch(optim(mle.out$par, MPLsurvC, y=y.i, delta=delta.i, ystar=ystar.i, #
+                              deltastar=deltastar.i, X=X.i, panel=panel.i, psihat=psihat, #
+                              lambdahat=lambdahat), error=function(e) print("error MPL"))#
+      if(is.character(MPL.out)) {#
+        xihatMPL[i]<-NA#
+        xihatMPL.SE[i]<-NA#
+        betahatMPL[,i]<-rep(NA,ncov)#
+        betahatMPL.SE[,i]<-rep(NA,ncov)#
+        mleMPLerr<-mleMPLerr+1#
+      }#
+      else {#
+        xihatMPL[i]<-MPL.out$par[1]#
+        betahatMPL[,i]<-MPL.out$par[-1]#
+        SEmpl<-tryCatch(as.vector(diag(solve(hessian(MPLsurvC, x=MPL.out$par, y=y.i, #
+                                                     delta=delta.i, ystar=ystar.i, deltastar=deltastar.i, #
+                                                     X=X.i, panel=panel.i, psihat=psihat, #
+                                                     lambdahat=lambdahat)))^.5),#
+                        error=function(e) print("error SEmpl"))#
+        if(is.character(SEmpl)) {#
+          xihatMPL.SE[i]<-NA#
+          betahatMPL.SE[,i]<-rep(NA,ncov)#
+          SEmplErr<-SEmplErr+1#
+        }#
+        else {#
+          xihatMPL.SE[i]<-SEmpl[1]#
+          betahatMPL.SE[,i]<-SEmpl[-1]#
+        }#
+      }#
+    }#
+  }     #
+  list(xihat=xihat, xihat.SE=xihat.SE, betahat=betahat,betahat.SE=betahat.SE,#
+       xihatMPL=xihatMPL, xihatMPL.SE=xihatMPL.SE, betahatMPL=betahatMPL,#
+       betahatMPL.SE=betahatMPL.SE, xi=attr(data,"xi"), lambda=attr(data,"lambda"),#
+       beta=attr(data,"beta"),alpha=attr(data,"alpha"),#
+       N=N,T=T,X=X,delta=delta,mleErr=mleErr,mleMPLerr=mleMPLerr,SEmplErr=SEmplErr,#
+       SEerr=SEerr,seed=attr(data,"seed"))#
+}#
+#
+N=50#
+T=4#
+ncov=2#
+panelInd <- rep(1:N, each=T)#
+#
+set.seed(64)#
+p=0.6#
+X <- matrix(NA, nrow=N*T, ncol=ncov)#
+X[,1] <- rbinom(N*T, 1, p)#
+X[,2] <- rnorm(N*T, 1, 1)#
+#
+xi=1.5#
+beta=c(1,2)#
+psi=c(xi,beta)#
+#
+mu <- 0.5*log(10/9) - 0.5*p - log(3)    # -1.346         #
+sigma <- sqrt(log(10/9) - (0.5^2)*p*(1-p))     # sqrt(0.0454)#
+lambda <- rnorm(N, mu, sigma)#
+prob.cens <- 0.2      # same prob. censoring in each cluster#
+#
+# find parameter of cens.distr. #
+varsigma <- varsigma.cens(psi=psi, lambda=lambda, X=X, panel=panelInd, prob.cens)$varsigma#
+#
+y450surv=simu_weib(X=X, panel=panelInd, psi=psi, lambda=lambda, varsigma=varsigma, Nsim=2000, #
+               seed=123)#
+ris450surv=survMPL.simula(y450surv, R=500)
+setwd("~/Documents/PhD/3rd year/SurvivalModelsMPL/Code Clo")
+dir()
+dyn.load("MPLsurv.so")
+dyn.load(MPLsurv.so)
+library(/Library/Frameworks/R.framework/Versions/3.2/Resources/lib/libR.dylib)
+library(libR.dylib)
+install.package(libR.dylib)
+install.packages(libR.dylib)
+dyn.load(MPLsurv.so)
+dyn.load("MPLsurv.so")
+SS.rho=function(rho,data)#
+{#
+  # Sum of Squared differences#
+  T=ncol(data)-1#
+  w=data[,-1,drop=FALSE]-rho*data[,-ncol(data),drop=FALSE]#
+  muhat.rho=rowMeans(w)#
+  ss=sum((w-muhat.rho)^2)#
+  ss#
+}#
+nloglP=function(rho,data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  sigma2hat.rho=SS.rho(rho,data)/(N*T)#
+  0.5*N*T*log(sigma2hat.rho)#
+}#
+ar.mle <- function(data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  rhohat.num<-sum(apply(data, 1, function(y) (sum(y[-1]*y[-length(y)])-T*mean(y[-1])*mean(y[-length(y)]))))#
+  rhohat.den<-sum(apply(data, 1, function(y) (sum(y[-length(y)]^2)-T*(mean(y[-length(y)]))^2)))#
+  rhohat<-rhohat.num/rhohat.den#
+  w=data[,-1,drop=FALSE]-rhohat*data[,-ncol(data),drop=FALSE]#
+  muhat=rowMeans(w)#
+  sigma2hat= SS.rho(rhohat,data)/(N*T)#
+  list(rhohat=rhohat,sigma2hat=sigma2hat,muhat=muhat)#
+}#
+#cambio directory!!!#
+#dyn.load("Imumu.dll")#
+dyn.load("Imumu.so")#
+#I_mumu con C#
+Imumu.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+	N=nrow(data)#
+	T=ncol(data)-1#
+	ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=(T+1))#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+	 out=.C("Imumu",#
+     as.double(rho),#
+     as.double(rhohat),#
+     as.double(muhat),#
+     as.double(muhat_rho),#
+     as.double(ystar),#
+     as.integer(N),#
+     as.integer(T),#
+     as.integer(R),#
+     output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo I con C#
+nloglPM1 <- function(rho, data, ybar0, psi.hat, mu.hat, R=500, seed=123){#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  I.star<-Imumu.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	0.5*N*(T-1)*log(SS.rho(rho,data))+sum(log(I.star))#
+}#
+##I_mumu metodo II#
+#dyn.load("Imumu2.dll")#
+dyn.load("Imumu2.so")#
+ImumuII.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=T+1)#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+  out=.C("Imumu2",#
+         as.double(rho),#
+         as.double(muhat_rho),#
+         as.double(ystar),#
+         as.integer(N),#
+         as.integer(T),#
+         as.integer(R),#
+         output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo II con C#
+nloglPM2 <- function(rho, data, ybar0, psi.hat, mu.hat, R=500, seed=123){#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  I.star<-ImumuII.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	0.5*N*(T-1)*log(SS.rho(rho,data))+0.5*sum(log(I.star))#
+}#
+AR.gen.dati <- function(rho,sigma2,mu,y0,T,Nsim,seed=NULL)#
+{#
+# data generation (mu and y0 are vectors of length N)#
+if (is.null(seed)) seed=.Random.seed#
+set.seed(seed)#
+N=length(mu)#
+out=array(NA,dim=c(N,T+1,Nsim))#
+for (j in 1:Nsim)#
+{#
+ystar=matrix(NA,nrow=N,ncol=T+1)#
+ystar[,1]=y0#
+for (i in 1:T) ystar[,i+1]=mu+rho*ystar[,i]+rnorm(N,mean=0,sd=sqrt(sigma2))#
+out[,,j]=ystar#
+}#
+#some attributes of the generated data#
+attr(out,"rho")=rho#
+attr(out,"sigma2")=sigma2#
+attr(out,"mu")=mu#
+attr(out,"seed")=seed#
+#array of dimension (N,T+1,Nsim)#
+out#
+}
+SS.rho=function(rho,data)#
+{#
+  # Sum of Squared differences#
+  T=ncol(data)-1#
+  w=data[,-1,drop=FALSE]-rho*data[,-ncol(data),drop=FALSE]#
+  muhat.rho=rowMeans(w)#
+  ss=sum((w-muhat.rho)^2)#
+  ss#
+}#
+nloglP=function(rho,data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  sigma2hat.rho=SS.rho(rho,data)/(N*T)#
+  0.5*N*T*log(sigma2hat.rho)#
+}#
+ar.mle <- function(data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  rhohat.num<-sum(apply(data, 1, function(y) (sum(y[-1]*y[-length(y)])-T*mean(y[-1])*mean(y[-length(y)]))))#
+  rhohat.den<-sum(apply(data, 1, function(y) (sum(y[-length(y)]^2)-T*(mean(y[-length(y)]))^2)))#
+  rhohat<-rhohat.num/rhohat.den#
+  w=data[,-1,drop=FALSE]-rhohat*data[,-ncol(data),drop=FALSE]#
+  muhat=rowMeans(w)#
+  sigma2hat= SS.rho(rhohat,data)/(N*T)#
+  list(rhohat=rhohat,sigma2hat=sigma2hat,muhat=muhat)#
+}#
+#cambio directory!!!#
+#dyn.load("Imumu.dll")#
+dyn.load("Imumu.so")#
+#I_mumu con C#
+Imumu.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+	N=nrow(data)#
+	T=ncol(data)-1#
+	ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=(T+1))#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+	 out=.C("Imumu",#
+     as.double(rho),#
+     as.double(rhohat),#
+     as.double(muhat),#
+     as.double(muhat_rho),#
+     as.double(ystar),#
+     as.integer(N),#
+     as.integer(T),#
+     as.integer(R),#
+     output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo I con C#
+nloglPM1 <- function(rho, data, ybar0, psi.hat, mu.hat, R=500, seed=123){#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  I.star<-Imumu.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	0.5*N*(T-1)*log(SS.rho(rho,data))+sum(log(I.star))#
+}#
+##I_mumu metodo II#
+#dyn.load("Imumu2.dll")#
+dyn.load("Imumu2.so")#
+ImumuII.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=T+1)#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+  out=.C("Imumu2",#
+         as.double(rho),#
+         as.double(muhat_rho),#
+         as.double(ystar),#
+         as.integer(N),#
+         as.integer(T),#
+         as.integer(R),#
+         output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo II con C#
+nloglPM2 <- function(rho, data, ybar0, psi.hat, mu.hat, R=500, seed=123){#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  I.star<-ImumuII.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	0.5*N*(T-1)*log(SS.rho(rho,data))+0.5*sum(log(I.star))#
+}#
+AR.gen.dati <- function(rho,sigma2,mu,y0,T,Nsim,seed=NULL)#
+{#
+# data generation (mu and y0 are vectors of length N)#
+if (is.null(seed)) seed=.Random.seed#
+set.seed(seed)#
+N=length(mu)#
+out=array(NA,dim=c(N,T+1,Nsim))#
+for (j in 1:Nsim)#
+{#
+ystar=matrix(NA,nrow=N,ncol=T+1)#
+ystar[,1]=y0#
+for (i in 1:T) ystar[,i+1]=mu+rho*ystar[,i]+rnorm(N,mean=0,sd=sqrt(sigma2))#
+out[,,j]=ystar#
+}#
+#some attributes of the generated data#
+attr(out,"rho")=rho#
+attr(out,"sigma2")=sigma2#
+attr(out,"mu")=mu#
+attr(out,"seed")=seed#
+#array of dimension (N,T+1,Nsim)#
+out#
+}
+AR.simula <- function(dati)#
+{#
+  # computes rhohat, sigma2hat, rhohatM1, sigma2hatM1, rhohatM2, sigma2hatM2                    R? seed?#
+  # and corresponding standard errors (SE)#
+  require(numDeriv)  # necessary for numerical derivatives (for SE)#
+  N=dim(dati)[1]#
+  T=dim(dati)[2]-1#
+  Nsim=dim(dati)[3]#
+  # prepare output vectors#
+  rhohat <- rhohat.M1 <- rhohat.M2 <- rep(NA,Nsim)#
+  sigma2hat <- sigma2hat.M1 <- sigma2hat.M2 <- rep(NA,Nsim)#
+  rhohat.SE <- rhohat.M1.SE <- rhohat.M2.SE <- rep(NA,Nsim)#
+ # sigma2hat.SE <- sigma2hat.M1.SE <- sigma2hat.M2.SE <- rep(NA,Nsim)#
+  for (i in 1:Nsim)#
+  {#
+    # i-th dataset (Nx(T+1))#
+    dati.i=dati[,,i]#
+    if (i%%10 ==0) print(i) # monitor progress (just to check initially)#
+    ## compute mle and modified mle (two versions) and save them#
+    ## in the i-th position of the vectors defined above#
+    ## same for the SE#
+    ## NOTE: for ordinary mle, the estimates are analytical;#
+    ## the same would be true for the observed information;#
+    ## however, we can obtain numerically the hessian of nloglP#
+    ## in the estimates#
+    ## we do the same with MPL's#
+    # example (mle):#
+    mle<-ar.mle(dati.i)#
+    mu.hat=mle$muhat#
+    r.hat=mle$rhohat#
+    s2.hat=mle$sigma2hat#
+    Jhat=hessian(nloglP,x=r.hat,data=dati.i)#
+    se=as.numeric(1/Jhat)^0.5#
+    #se=diag(solve(Jhat))^0.5#
+    rhohat[i]=r.hat#
+    sigma2hat[i]=s2.hat#
+    rhohat.SE[i]=se#
+    #rhohat.SE[i]=se[1]#
+    #sigma2hat.SE[i]=se[2]#
+    # must do the same for MPL1 and MPL2 (mle would be numerical)#
+    ybar.0<-apply(dati.i, 1, function(y) mean(y[1:T]))#
+    #MPL1#
+    #mle.M1<-nlm(nloglPM1, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    mle.M1<-optimize(nloglPM1, c(-1.5,1.5), data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)#
+    # rhohat.M1[i]=mle.M1$estimate#
+    # sigma2hat.M1[i]=SS.rho(mle.M1$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M1.SE[i]=as.numeric(1/mle.M1$hessian)^0.5#
+    rhohat.M1[i]=mle.M1$minimum#
+    sigma2hat.M1[i]=SS.rho(mle.M1$minimum,dati.i)/(N*(T-1))#
+    rhohat.M1.SE[i]=hessian(nloglPM1,mle.M1$minimum,data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)^(-0.5)#
+    #sigma2hat.M1.SE[i]=se.M1[2]#
+    #MPL2#
+    # mle.M2<-nlm(nloglPM2, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    # rhohat.M2[i]=mle.M2$estimate#
+    # sigma2hat.M2[i]=SS.rho(mle.M2$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M2.SE[i]=as.numeric(1/mle.M2$hessian)^0.5#
+    #sigma2hat.M2.SE[i]=se.M2[2]#
+  }#
+  list(rhohat=rhohat,rhohat.M1=rhohat.M1,rhohat.M2=rhohat.M2,#
+       rhohat.SE=rhohat.SE,rhohat.M1.SE=rhohat.M1.SE,rhohat.M2.SE=rhohat.M2.SE,#
+       sigma2hat=sigma2hat,sigma2hat.M1=sigma2hat.M1,sigma2hat.M2=sigma2hat.M2,#
+#       sigma2hat.SE=sigma2hat.SE,sigma2hat.M1.SE=sigma2hat.M1.SE,sigma2hat.M2.SE=sigma2hat.M2.SE,#
+       N=attr(dati,"dim")[1],T=(attr(dati,"dim")[2])-1,rho=attr(dati,"rho"),sigma2=attr(dati,"sigma2"),#
+       mu=attr(dati,"mu"),t0=dati[,1,1],seed=attr(dati,"seed"))#
+}
+### SIMULAZIONI CALCULUS#
+SS.rho=function(rho,data)#
+{#
+  # Sum of Squared differences#
+  T=ncol(data)-1#
+  w=data[,-1,drop=FALSE]-rho*data[,-ncol(data),drop=FALSE]#
+  muhat.rho=rowMeans(w)#
+  ss=sum((w-muhat.rho)^2)#
+  ss#
+}#
+nloglP=function(rho,data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  sigma2hat.rho=SS.rho(rho,data)/(N*T)#
+  0.5*N*T*log(sigma2hat.rho)#
+}#
+ar.mle <- function(data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  rhohat.num<-sum(apply(data, 1, function(y) (sum(y[-1]*y[-length(y)])-T*mean(y[-1])*mean(y[-length(y)]))))#
+  rhohat.den<-sum(apply(data, 1, function(y) (sum(y[-length(y)]^2)-T*(mean(y[-length(y)]))^2)))#
+  rhohat<-rhohat.num/rhohat.den#
+  w=data[,-1,drop=FALSE]-rhohat*data[,-ncol(data),drop=FALSE]#
+  muhat=rowMeans(w)#
+  sigma2hat= SS.rho(rhohat,data)/(N*T)#
+  list(rhohat=rhohat,sigma2hat=sigma2hat,muhat=muhat)#
+}#
+#cambio directory!!!#
+#dyn.load("Imumu.dll")#
+dyn.load("Imumu.so")#
+#I_mumu con C#
+Imumu.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+	N=nrow(data)#
+	T=ncol(data)-1#
+	ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=(T+1))#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+	 out=.C("Imumu",#
+     as.double(rho),#
+     as.double(rhohat),#
+     as.double(muhat),#
+     as.double(muhat_rho),#
+     as.double(ystar),#
+     as.integer(N),#
+     as.integer(T),#
+     as.integer(R),#
+     output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo I con C#
+nloglPM1 <- function(rho, data, ybar0, psi.hat, mu.hat, R=5, seed=123){#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  I.star<-Imumu.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	0.5*N*(T-1)*log(SS.rho(rho,data))+sum(log(I.star))#
+}#
+##I_mumu metodo II#
+#dyn.load("Imumu2.dll")#
+#dyn.load("Imumu2.so")#
+ImumuII.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=T+1)#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+  out=.C("Imumu2",#
+         as.double(rho),#
+         as.double(muhat_rho),#
+         as.double(ystar),#
+         as.integer(N),#
+         as.integer(T),#
+         as.integer(R),#
+         output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo II con C#
+# nloglPM2 <- function(rho, data, ybar0, psi.hat, mu.hat, R=500, seed=123){#
+  # N=nrow(data)#
+  # T=ncol(data)-1#
+  # if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  # mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  # I.star<-ImumuII.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	# 0.5*N*(T-1)*log(SS.rho(rho,data))+0.5*sum(log(I.star))#
+# }#
+AR.gen.dati <- function(rho,sigma2,mu,y0,T,Nsim,seed=NULL)#
+{#
+# data generation (mu and y0 are vectors of length N)#
+if (is.null(seed)) seed=.Random.seed#
+set.seed(seed)#
+N=length(mu)#
+out=array(NA,dim=c(N,T+1,Nsim))#
+for (j in 1:Nsim)#
+{#
+ystar=matrix(NA,nrow=N,ncol=T+1)#
+ystar[,1]=y0#
+for (i in 1:T) ystar[,i+1]=mu+rho*ystar[,i]+rnorm(N,mean=0,sd=sqrt(sigma2))#
+out[,,j]=ystar#
+}#
+#some attributes of the generated data#
+attr(out,"rho")=rho#
+attr(out,"sigma2")=sigma2#
+attr(out,"mu")=mu#
+attr(out,"seed")=seed#
+#array of dimension (N,T+1,Nsim)#
+out#
+}#
+AR.simula <- function(dati)#
+{#
+  # computes rhohat, sigma2hat, rhohatM1, sigma2hatM1, rhohatM2, sigma2hatM2                    R? seed?#
+  # and corresponding standard errors (SE)#
+  require(numDeriv)  # necessary for numerical derivatives (for SE)#
+  N=dim(dati)[1]#
+  T=dim(dati)[2]-1#
+  Nsim=dim(dati)[3]#
+  # prepare output vectors#
+  rhohat <- rhohat.M1 <- rhohat.M2 <- rep(NA,Nsim)#
+  sigma2hat <- sigma2hat.M1 <- sigma2hat.M2 <- rep(NA,Nsim)#
+  rhohat.SE <- rhohat.M1.SE <- rhohat.M2.SE <- rep(NA,Nsim)#
+ # sigma2hat.SE <- sigma2hat.M1.SE <- sigma2hat.M2.SE <- rep(NA,Nsim)#
+  for (i in 1:Nsim)#
+  {#
+    # i-th dataset (Nx(T+1))#
+    dati.i=dati[,,i]#
+    if (i%%10 ==0) print(i) # monitor progress (just to check initially)#
+    ## compute mle and modified mle (two versions) and save them#
+    ## in the i-th position of the vectors defined above#
+    ## same for the SE#
+    ## NOTE: for ordinary mle, the estimates are analytical;#
+    ## the same would be true for the observed information;#
+    ## however, we can obtain numerically the hessian of nloglP#
+    ## in the estimates#
+    ## we do the same with MPL's#
+    # example (mle):#
+    mle<-ar.mle(dati.i)#
+    mu.hat=mle$muhat#
+    r.hat=mle$rhohat#
+    s2.hat=mle$sigma2hat#
+    Jhat=hessian(nloglP,x=r.hat,data=dati.i)#
+    se=as.numeric(1/Jhat)^0.5#
+    #se=diag(solve(Jhat))^0.5#
+    rhohat[i]=r.hat#
+    sigma2hat[i]=s2.hat#
+    rhohat.SE[i]=se#
+    #rhohat.SE[i]=se[1]#
+    #sigma2hat.SE[i]=se[2]#
+    # must do the same for MPL1 and MPL2 (mle would be numerical)#
+    ybar.0<-apply(dati.i, 1, function(y) mean(y[1:T]))#
+    #MPL1#
+    #mle.M1<-nlm(nloglPM1, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    mle.M1<-optimize(nloglPM1, c(-1.5,1.5), data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)#
+    # rhohat.M1[i]=mle.M1$estimate#
+    # sigma2hat.M1[i]=SS.rho(mle.M1$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M1.SE[i]=as.numeric(1/mle.M1$hessian)^0.5#
+    rhohat.M1[i]=mle.M1$minimum#
+    sigma2hat.M1[i]=SS.rho(mle.M1$minimum,dati.i)/(N*(T-1))#
+    rhohat.M1.SE[i]=hessian(nloglPM1,mle.M1$minimum,data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)^(-0.5)#
+    #sigma2hat.M1.SE[i]=se.M1[2]#
+    #MPL2#
+    # mle.M2<-nlm(nloglPM2, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    # rhohat.M2[i]=mle.M2$estimate#
+    # sigma2hat.M2[i]=SS.rho(mle.M2$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M2.SE[i]=as.numeric(1/mle.M2$hessian)^0.5#
+    #sigma2hat.M2.SE[i]=se.M2[2]#
+  }#
+  list(rhohat=rhohat,rhohat.M1=rhohat.M1,rhohat.M2=rhohat.M2,#
+       rhohat.SE=rhohat.SE,rhohat.M1.SE=rhohat.M1.SE,rhohat.M2.SE=rhohat.M2.SE,#
+       sigma2hat=sigma2hat,sigma2hat.M1=sigma2hat.M1,sigma2hat.M2=sigma2hat.M2,#
+#       sigma2hat.SE=sigma2hat.SE,sigma2hat.M1.SE=sigma2hat.M1.SE,sigma2hat.M2.SE=sigma2hat.M2.SE,#
+       N=attr(dati,"dim")[1],T=(attr(dati,"dim")[2])-1,rho=attr(dati,"rho"),sigma2=attr(dati,"sigma2"),#
+       mu=attr(dati,"mu"),t0=dati[,1,1],seed=attr(dati,"seed"))#
+}#
+# prova#
+y1=AR.gen.dati(rho=0.5,sigma2=1,mu=rnorm(250, mean=1, sd=1),y0=rep(0,250),T=4,Nsim=2000,seed=321)#
+risultatiR5=AR.simula(y1)
+warnings()
+summary.sim <- function(risultati, conf.level=c(0.9,0.95,0.99))#
+{#
+	#summary for object of class "sim"#
+#
+	#estimator's biases#
+	biasmler <- risultati$rhohat - risultati$rho                #bias rho MLE#
+	biasmles <- risultati$sigma2hat - risultati$sigma2           #bias sigma2 MLE#
+	biasmlerM1 <- risultati$rhohat.M1 - risultati$rho#
+	biasmlesM1 <- risultati$sigma2hat.M1 - risultati$sigma2#
+	biasmlerM2 <- risultati$rhohat.M2 - risultati$rho#
+	biasmlesM2 <- risultati$sigma2hat.M2 - risultati$sigma2#
+	out1 <- rbind(c(mean(biasmler),median(biasmler)),c(mean(biasmlerM1),median(biasmlerM1)),c(mean(biasmlerM2),median(biasmlerM2)))#
+	out2 <- rbind(c(mean(biasmles),median(biasmles)),c(mean(biasmlesM1),median(biasmlesM1)),c(mean(biasmlesM2),median(biasmlesM2)))#
+	out1 <- data.frame(out1)#
+	out2 <- data.frame(out2)#
+	names(out1) <- names(out2) <- c("BIAS","Median BIAS")#
+	row.names(out1) <- c('ML','MPL-1','MPL-2')#
+	row.names(out2) <- c('ML','MPL-1','MPL-2')#
+#
+	# simulation standard errors#
+	sim.sd <- c(sd(risultati$rhohat),sd(risultati$rhohat.M1),sd(risultati$rhohat.M2),sd(risultati$sigma2hat),sd(risultati$sigma2hat.M1),sd(risultati$sigma2hat.M2))#
+#
+	# average standard errors#
+	mean.sd <- c(mean(risultati$rhohat.SE),mean(risultati$rhohat.M1.SE),mean(risultati$rhohat.M2.SE))#
+  #,mean(risultati$sigma2hat.SE),mean(risultati$sigma2hat.M1.SE),mean(risultati$sigma2hat.M2.SE))#
+	# square root of MSE and MAE#
+	rmse <- c(sqrt(mean(biasmler^2)),sqrt(mean(biasmlerM1^2)),sqrt(mean(biasmlerM2^2)),sqrt(mean(biasmles^2)),sqrt(mean(biasmlesM1^2)),sqrt(mean(biasmlesM2^2)))#
+	mae <- c(median(abs(biasmler)),median(abs(biasmlerM1)),median(abs(biasmlerM2)),median(abs(biasmles)),median(abs(biasmlesM1)),median(abs(biasmlesM2)))#
+	out1 <- data.frame(out1,SD=sim.sd[1:3],RMSE=rmse[1:3],MAE=mae[1:3],SE.SD=mean.sd[1:3]/sim.sd[1:3])#
+	out2 <- data.frame(out2,SD=sim.sd[4:6],RMSE=rmse[4:6],MAE=mae[4:6])#
+  #,SE.SD=mean.sd[4:6]/sim.sd[4:6])#
+#	# coverage of confidence region for (rho,delta,lsigma2) based on LRT#
+#	W.coverage <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp<qchisq(x,2))),sapply(conf.level, function(x) mean(risultati$Wpm<qchisq(x,2))))#
+#	colnames(W.coverage) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage) <- c('nominal','Wp','Wm')#
+#	W.coverage <- data.frame(W.coverage)#
+#	#
+#	# coverage of confidence interval for rho, delta and lsigma2 based on LRT#
+#	W.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wp.lsigma2<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.lsigma2<qchisq(x,1))))#
+#	colnames(W.coverage.prof) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage.prof) <- c('nominal','rhohat','lsigma2hat','rhohatM','lsigma2hatM')#
+#	W.coverage.prof <- data.frame(W.coverage.prof)#
+	# coverage of WALD confidence intervals for rho and sigma2 #
+	Wald.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) mean((risultati$rhohat-risultati$rho)^2/risultati$rhohat.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$rhohat.M1-risultati$rho)^2/risultati$rhohat.M1.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$rhohat.M2-risultati$rho)^2/risultati$rhohat.M2.SE^2<qchisq(x,1))))#
+  #,sapply(conf.level, function(x) mean((risultati$sigma2hat-risultati$sigma2)^2/risultati$sigma2hat.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M1-risultati$sigma2)^2/risultati$sigma2hat.M1.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M2-risultati$sigma2)^2/risultati$sigma2hat.M2.SE^2<qchisq(x,1))))#
+	colnames(Wald.coverage.prof) <- paste('conf',conf.level,sep='')#
+	rownames(Wald.coverage.prof) <- c('nominal','rhohat','rhohatM1','rhohatM2')#
+  #,'sigma2hat','sigma2hatM1','sigma2hatM2')#
+	Wald.coverage.prof <- data.frame(Wald.coverage.prof)#
+   # bias and rmse percentage gains#
+#   biaspercr <- (out1$BIAS[1]-out1$BIAS[2])/(out1$BIAS[1]-out1$BIAS[3])   #
+#   rmsepercr <- (out1$RMSE[1]-out1$RMSE[2])/(out1$RMSE[1]-out1$RMSE[3])#
+#   biaspercs <- (out2$BIAS[1]-out2$BIAS[2])/(out2$BIAS[1]-out2$BIAS[3])   #
+#   rmsepercs <- (out2$RMSE[1]-out2$RMSE[2])/(out2$RMSE[1]-out2$RMSE[3])#
+list(rho=out1,sigma2=out2,Wald.coverage.p=Wald.coverage.prof)#
+}
+summary.sim(risultatiR5, conf.level=0.95)
+summary.sim <- function(risultati, conf.level=c(0.9,0.95,0.99))#
+{#
+	#summary for object of class "sim"#
+#
+	#estimator's biases#
+	biasmler <- risultati$rhohat - risultati$rho                #bias rho MLE#
+	biasmles <- risultati$sigma2hat - risultati$sigma2           #bias sigma2 MLE#
+	biasmlerM1 <- risultati$rhohat.M1 - risultati$rho#
+	biasmlesM1 <- risultati$sigma2hat.M1 - risultati$sigma2#
+	biasmlerM2 <- risultati$rhohat.M2 - risultati$rho#
+	biasmlesM2 <- risultati$sigma2hat.M2 - risultati$sigma2#
+	out1 <- rbind(c(mean(biasmler),median(biasmler)),c(mean(biasmlerM1),median(biasmlerM1)),c(mean(biasmlerM2),median(biasmlerM2)))#
+	out2 <- rbind(c(mean(biasmles),median(biasmles)),c(mean(biasmlesM1),median(biasmlesM1)),c(mean(biasmlesM2),median(biasmlesM2)))#
+	out1 <- data.frame(out1)#
+	out2 <- data.frame(out2)#
+	names(out1) <- names(out2) <- c("BIAS","Median BIAS")#
+	row.names(out1) <- c('ML','MPL-1','MPL-2')#
+	row.names(out2) <- c('ML','MPL-1','MPL-2')#
+#
+	# simulation standard errors#
+	sim.sd <- c(sd(risultati$rhohat),sd(risultati$rhohat.M1),sd(risultati$rhohat.M2),sd(risultati$sigma2hat),sd(risultati$sigma2hat.M1),sd(risultati$sigma2hat.M2))#
+#
+	# average standard errors#
+	mean.sd <- c(mean(risultati$rhohat.SE, na.rm=T),mean(risultati$rhohat.M1.SE, na.rm=T),#
+	             mean(risultati$rhohat.M2.SE, na.rm=T))#
+  #,mean(risultati$sigma2hat.SE),mean(risultati$sigma2hat.M1.SE),mean(risultati$sigma2hat.M2.SE))#
+	# square root of MSE and MAE#
+	rmse <- c(sqrt(mean(biasmler^2)),sqrt(mean(biasmlerM1^2)),sqrt(mean(biasmlerM2^2)),sqrt(mean(biasmles^2)),sqrt(mean(biasmlesM1^2)),sqrt(mean(biasmlesM2^2)))#
+	mae <- c(median(abs(biasmler)),median(abs(biasmlerM1)),median(abs(biasmlerM2)),median(abs(biasmles)),median(abs(biasmlesM1)),median(abs(biasmlesM2)))#
+	out1 <- data.frame(out1,SD=sim.sd[1:3],RMSE=rmse[1:3],MAE=mae[1:3],SE.SD=mean.sd[1:3]/sim.sd[1:3])#
+	out2 <- data.frame(out2,SD=sim.sd[4:6],RMSE=rmse[4:6],MAE=mae[4:6])#
+  #,SE.SD=mean.sd[4:6]/sim.sd[4:6])#
+#	# coverage of confidence region for (rho,delta,lsigma2) based on LRT#
+#	W.coverage <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp<qchisq(x,2))),sapply(conf.level, function(x) mean(risultati$Wpm<qchisq(x,2))))#
+#	colnames(W.coverage) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage) <- c('nominal','Wp','Wm')#
+#	W.coverage <- data.frame(W.coverage)#
+#	#
+#	# coverage of confidence interval for rho, delta and lsigma2 based on LRT#
+#	W.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wp.lsigma2<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.lsigma2<qchisq(x,1))))#
+#	colnames(W.coverage.prof) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage.prof) <- c('nominal','rhohat','lsigma2hat','rhohatM','lsigma2hatM')#
+#	W.coverage.prof <- data.frame(W.coverage.prof)#
+	# coverage of WALD confidence intervals for rho and sigma2 #
+	Wald.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) #
+	  mean((risultati$rhohat-risultati$rho)^2/risultati$rhohat.SE^2<qchisq(x,1)), na.rm=T),#
+	  sapply(conf.level, function(x) mean((risultati$rhohat.M1-risultati$rho)^2/#
+	                                        risultati$rhohat.M1.SE^2<qchisq(x,1)), na.rm=T),#
+	  sapply(conf.level, function(x) mean((risultati$rhohat.M2-risultati$rho)^2/#
+	                                        risultati$rhohat.M2.SE^2<qchisq(x,1)), na.rm=T))#
+  #,sapply(conf.level, function(x) mean((risultati$sigma2hat-risultati$sigma2)^2/risultati$sigma2hat.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M1-risultati$sigma2)^2/risultati$sigma2hat.M1.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M2-risultati$sigma2)^2/risultati$sigma2hat.M2.SE^2<qchisq(x,1))))#
+	colnames(Wald.coverage.prof) <- paste('conf',conf.level,sep='')#
+	rownames(Wald.coverage.prof) <- c('nominal','rhohat','rhohatM1','rhohatM2')#
+  #,'sigma2hat','sigma2hatM1','sigma2hatM2')#
+	Wald.coverage.prof <- data.frame(Wald.coverage.prof)#
+   # bias and rmse percentage gains#
+#   biaspercr <- (out1$BIAS[1]-out1$BIAS[2])/(out1$BIAS[1]-out1$BIAS[3])   #
+#   rmsepercr <- (out1$RMSE[1]-out1$RMSE[2])/(out1$RMSE[1]-out1$RMSE[3])#
+#   biaspercs <- (out2$BIAS[1]-out2$BIAS[2])/(out2$BIAS[1]-out2$BIAS[3])   #
+#   rmsepercs <- (out2$RMSE[1]-out2$RMSE[2])/(out2$RMSE[1]-out2$RMSE[3])#
+list(rho=out1,sigma2=out2,Wald.coverage.p=Wald.coverage.prof)#
+}
+summary.sim(risultatiR5, conf.level=0.95)
+mean()
+summary.sim <- function(risultati, conf.level=c(0.9,0.95,0.99))#
+{#
+	#summary for object of class "sim"#
+#
+	#estimator's biases#
+	biasmler <- risultati$rhohat - risultati$rho                #bias rho MLE#
+	biasmles <- risultati$sigma2hat - risultati$sigma2           #bias sigma2 MLE#
+	biasmlerM1 <- risultati$rhohat.M1 - risultati$rho#
+	biasmlesM1 <- risultati$sigma2hat.M1 - risultati$sigma2#
+	biasmlerM2 <- risultati$rhohat.M2 - risultati$rho#
+	biasmlesM2 <- risultati$sigma2hat.M2 - risultati$sigma2#
+	out1 <- rbind(c(mean(biasmler),median(biasmler)),c(mean(biasmlerM1),median(biasmlerM1)),c(mean(biasmlerM2),median(biasmlerM2)))#
+	out2 <- rbind(c(mean(biasmles),median(biasmles)),c(mean(biasmlesM1),median(biasmlesM1)),c(mean(biasmlesM2),median(biasmlesM2)))#
+	out1 <- data.frame(out1)#
+	out2 <- data.frame(out2)#
+	names(out1) <- names(out2) <- c("BIAS","Median BIAS")#
+	row.names(out1) <- c('ML','MPL-1','MPL-2')#
+	row.names(out2) <- c('ML','MPL-1','MPL-2')#
+#
+	# simulation standard errors#
+	sim.sd <- c(sd(risultati$rhohat),sd(risultati$rhohat.M1),sd(risultati$rhohat.M2),sd(risultati$sigma2hat),sd(risultati$sigma2hat.M1),sd(risultati$sigma2hat.M2))#
+#
+	# average standard errors#
+	mean.sd <- c(mean(risultati$rhohat.SE, na.rm=T),mean(risultati$rhohat.M1.SE, na.rm=T),#
+	             mean(risultati$rhohat.M2.SE, na.rm=T))#
+  #,mean(risultati$sigma2hat.SE),mean(risultati$sigma2hat.M1.SE),mean(risultati$sigma2hat.M2.SE))#
+	# square root of MSE and MAE#
+	rmse <- c(sqrt(mean(biasmler^2)),sqrt(mean(biasmlerM1^2)),sqrt(mean(biasmlerM2^2)),sqrt(mean(biasmles^2)),sqrt(mean(biasmlesM1^2)),sqrt(mean(biasmlesM2^2)))#
+	mae <- c(median(abs(biasmler)),median(abs(biasmlerM1)),median(abs(biasmlerM2)),median(abs(biasmles)),median(abs(biasmlesM1)),median(abs(biasmlesM2)))#
+	out1 <- data.frame(out1,SD=sim.sd[1:3],RMSE=rmse[1:3],MAE=mae[1:3],SE.SD=mean.sd[1:3]/sim.sd[1:3])#
+	out2 <- data.frame(out2,SD=sim.sd[4:6],RMSE=rmse[4:6],MAE=mae[4:6])#
+  #,SE.SD=mean.sd[4:6]/sim.sd[4:6])#
+#	# coverage of confidence region for (rho,delta,lsigma2) based on LRT#
+#	W.coverage <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp<qchisq(x,2))),sapply(conf.level, function(x) mean(risultati$Wpm<qchisq(x,2))))#
+#	colnames(W.coverage) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage) <- c('nominal','Wp','Wm')#
+#	W.coverage <- data.frame(W.coverage)#
+#	#
+#	# coverage of confidence interval for rho, delta and lsigma2 based on LRT#
+#	W.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wp.lsigma2<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.lsigma2<qchisq(x,1))))#
+#	colnames(W.coverage.prof) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage.prof) <- c('nominal','rhohat','lsigma2hat','rhohatM','lsigma2hatM')#
+#	W.coverage.prof <- data.frame(W.coverage.prof)#
+	# coverage of WALD confidence intervals for rho and sigma2 #
+	Wald.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) #
+	  mean((risultati$rhohat-risultati$rho)^2/risultati$rhohat.SE^2<qchisq(x,1), na.rm=T)),#
+	  sapply(conf.level, function(x) mean((risultati$rhohat.M1-risultati$rho)^2/#
+	                                        risultati$rhohat.M1.SE^2<qchisq(x,1), na.rm=T)),#
+	  sapply(conf.level, function(x) mean((risultati$rhohat.M2-risultati$rho)^2/#
+	                                        risultati$rhohat.M2.SE^2<qchisq(x,1), na.rm=T)))#
+  #,sapply(conf.level, function(x) mean((risultati$sigma2hat-risultati$sigma2)^2/risultati$sigma2hat.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M1-risultati$sigma2)^2/risultati$sigma2hat.M1.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M2-risultati$sigma2)^2/risultati$sigma2hat.M2.SE^2<qchisq(x,1))))#
+	colnames(Wald.coverage.prof) <- paste('conf',conf.level,sep='')#
+	rownames(Wald.coverage.prof) <- c('nominal','rhohat','rhohatM1','rhohatM2')#
+  #,'sigma2hat','sigma2hatM1','sigma2hatM2')#
+	Wald.coverage.prof <- data.frame(Wald.coverage.prof)#
+   # bias and rmse percentage gains#
+#   biaspercr <- (out1$BIAS[1]-out1$BIAS[2])/(out1$BIAS[1]-out1$BIAS[3])   #
+#   rmsepercr <- (out1$RMSE[1]-out1$RMSE[2])/(out1$RMSE[1]-out1$RMSE[3])#
+#   biaspercs <- (out2$BIAS[1]-out2$BIAS[2])/(out2$BIAS[1]-out2$BIAS[3])   #
+#   rmsepercs <- (out2$RMSE[1]-out2$RMSE[2])/(out2$RMSE[1]-out2$RMSE[3])#
+list(rho=out1,sigma2=out2,Wald.coverage.p=Wald.coverage.prof)#
+}
+summary.sim(risultatiR5, conf.level=0.95)
+save(res05R5-4250, file="res05-4.250R5.Rdata")
+res05R5-4250<-risultatiR5
+res05R5.4250<-risultatiR5
+sum05R5.4250<-summary.sim(risultatiR5, conf.level=0.95)
+save(res05R5.4250, sum05R5.4250, file="res05-4.250R5.Rdata")
+### SIMULAZIONI CALCULUS#
+SS.rho=function(rho,data)#
+{#
+  # Sum of Squared differences#
+  T=ncol(data)-1#
+  w=data[,-1,drop=FALSE]-rho*data[,-ncol(data),drop=FALSE]#
+  muhat.rho=rowMeans(w)#
+  ss=sum((w-muhat.rho)^2)#
+  ss#
+}#
+nloglP=function(rho,data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  sigma2hat.rho=SS.rho(rho,data)/(N*T)#
+  0.5*N*T*log(sigma2hat.rho)#
+}#
+ar.mle <- function(data)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  rhohat.num<-sum(apply(data, 1, function(y) (sum(y[-1]*y[-length(y)])-T*mean(y[-1])*mean(y[-length(y)]))))#
+  rhohat.den<-sum(apply(data, 1, function(y) (sum(y[-length(y)]^2)-T*(mean(y[-length(y)]))^2)))#
+  rhohat<-rhohat.num/rhohat.den#
+  w=data[,-1,drop=FALSE]-rhohat*data[,-ncol(data),drop=FALSE]#
+  muhat=rowMeans(w)#
+  sigma2hat= SS.rho(rhohat,data)/(N*T)#
+  list(rhohat=rhohat,sigma2hat=sigma2hat,muhat=muhat)#
+}#
+#cambio directory!!!#
+#dyn.load("Imumu.dll")#
+dyn.load("Imumu.so")#
+#I_mumu con C#
+Imumu.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+	N=nrow(data)#
+	T=ncol(data)-1#
+	ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=(T+1))#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+	 out=.C("Imumu",#
+     as.double(rho),#
+     as.double(rhohat),#
+     as.double(muhat),#
+     as.double(muhat_rho),#
+     as.double(ystar),#
+     as.integer(N),#
+     as.integer(T),#
+     as.integer(R),#
+     output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo I con C#
+nloglPM1 <- function(rho, data, ybar0, psi.hat, mu.hat, R=5, seed=123){#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  I.star<-Imumu.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	0.5*N*(T-1)*log(SS.rho(rho,data))+sum(log(I.star))#
+}#
+##I_mumu metodo II#
+#dyn.load("Imumu2.dll")#
+#dyn.load("Imumu2.so")#
+ImumuII.c <- function(rho,rhohat,muhat,muhat_rho,sigma2hat,R,data,seed)#
+{#
+  N=nrow(data)#
+  T=ncol(data)-1#
+  ystar=array(NA,dim=c(N,T+1,R))#
+  set.seed(seed)#
+  for (j in 1:R)#
+  {#
+    yst=matrix(NA,nrow=N,ncol=T+1)#
+    yst[,1]=data[,1]#
+    for (i in 1:T) yst[,i+1]=muhat+rhohat*yst[,i]+rnorm(N,mean=0,sd=sqrt(sigma2hat))#
+    ystar[,,j]=yst#
+  }#
+  out=.C("Imumu2",#
+         as.double(rho),#
+         as.double(muhat_rho),#
+         as.double(ystar),#
+         as.integer(N),#
+         as.integer(T),#
+         as.integer(R),#
+         output=as.double(rep(0,N)))$output#
+  out#
+}#
+##LOG PROFILO MODIFICATA metodo II con C#
+# nloglPM2 <- function(rho, data, ybar0, psi.hat, mu.hat, R=500, seed=123){#
+  # N=nrow(data)#
+  # T=ncol(data)-1#
+  # if(is.null(seed)) seeds=.Random.seed  else seeds<-seed#
+  # mu.hat.rho=mu.hat+(psi.hat[1]-rho)*ybar0#
+  # I.star<-ImumuII.c(rho=rho,rhohat=psi.hat[1],muhat=mu.hat,muhat_rho=mu.hat.rho,sigma2hat=psi.hat[2],R=R,data=data,seed=seeds)#
+	# 0.5*N*(T-1)*log(SS.rho(rho,data))+0.5*sum(log(I.star))#
+# }#
+AR.gen.dati <- function(rho,sigma2,mu,y0,T,Nsim,seed=NULL)#
+{#
+# data generation (mu and y0 are vectors of length N)#
+if (is.null(seed)) seed=.Random.seed#
+set.seed(seed)#
+N=length(mu)#
+out=array(NA,dim=c(N,T+1,Nsim))#
+for (j in 1:Nsim)#
+{#
+ystar=matrix(NA,nrow=N,ncol=T+1)#
+ystar[,1]=y0#
+for (i in 1:T) ystar[,i+1]=mu+rho*ystar[,i]+rnorm(N,mean=0,sd=sqrt(sigma2))#
+out[,,j]=ystar#
+}#
+#some attributes of the generated data#
+attr(out,"rho")=rho#
+attr(out,"sigma2")=sigma2#
+attr(out,"mu")=mu#
+attr(out,"seed")=seed#
+#array of dimension (N,T+1,Nsim)#
+out#
+}#
+AR.simula <- function(dati)#
+{#
+  # computes rhohat, sigma2hat, rhohatM1, sigma2hatM1, rhohatM2, sigma2hatM2                    R? seed?#
+  # and corresponding standard errors (SE)#
+  require(numDeriv)  # necessary for numerical derivatives (for SE)#
+  N=dim(dati)[1]#
+  T=dim(dati)[2]-1#
+  Nsim=dim(dati)[3]#
+  # prepare output vectors#
+  rhohat <- rhohat.M1 <- rhohat.M2 <- rep(NA,Nsim)#
+  sigma2hat <- sigma2hat.M1 <- sigma2hat.M2 <- rep(NA,Nsim)#
+  rhohat.SE <- rhohat.M1.SE <- rhohat.M2.SE <- rep(NA,Nsim)#
+ # sigma2hat.SE <- sigma2hat.M1.SE <- sigma2hat.M2.SE <- rep(NA,Nsim)#
+  for (i in 1:Nsim)#
+  {#
+    # i-th dataset (Nx(T+1))#
+    dati.i=dati[,,i]#
+    if (i%%10 ==0) print(i) # monitor progress (just to check initially)#
+    ## compute mle and modified mle (two versions) and save them#
+    ## in the i-th position of the vectors defined above#
+    ## same for the SE#
+    ## NOTE: for ordinary mle, the estimates are analytical;#
+    ## the same would be true for the observed information;#
+    ## however, we can obtain numerically the hessian of nloglP#
+    ## in the estimates#
+    ## we do the same with MPL's#
+    # example (mle):#
+    mle<-ar.mle(dati.i)#
+    mu.hat=mle$muhat#
+    r.hat=mle$rhohat#
+    s2.hat=mle$sigma2hat#
+    Jhat=hessian(nloglP,x=r.hat,data=dati.i)#
+    se=as.numeric(1/Jhat)^0.5#
+    #se=diag(solve(Jhat))^0.5#
+    rhohat[i]=r.hat#
+    sigma2hat[i]=s2.hat#
+    rhohat.SE[i]=se#
+    #rhohat.SE[i]=se[1]#
+    #sigma2hat.SE[i]=se[2]#
+    # must do the same for MPL1 and MPL2 (mle would be numerical)#
+    ybar.0<-apply(dati.i, 1, function(y) mean(y[1:T]))#
+    #MPL1#
+    #mle.M1<-nlm(nloglPM1, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    mle.M1<-optimize(nloglPM1, c(-1.5,1.5), data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)#
+    # rhohat.M1[i]=mle.M1$estimate#
+    # sigma2hat.M1[i]=SS.rho(mle.M1$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M1.SE[i]=as.numeric(1/mle.M1$hessian)^0.5#
+    rhohat.M1[i]=mle.M1$minimum#
+    sigma2hat.M1[i]=SS.rho(mle.M1$minimum,dati.i)/(N*(T-1))#
+    rhohat.M1.SE[i]=hessian(nloglPM1,mle.M1$minimum,data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)^(-0.5)#
+    #sigma2hat.M1.SE[i]=se.M1[2]#
+    #MPL2#
+    # mle.M2<-nlm(nloglPM2, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    # rhohat.M2[i]=mle.M2$estimate#
+    # sigma2hat.M2[i]=SS.rho(mle.M2$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M2.SE[i]=as.numeric(1/mle.M2$hessian)^0.5#
+    #sigma2hat.M2.SE[i]=se.M2[2]#
+  }#
+  list(rhohat=rhohat,rhohat.M1=rhohat.M1,rhohat.M2=rhohat.M2,#
+       rhohat.SE=rhohat.SE,rhohat.M1.SE=rhohat.M1.SE,rhohat.M2.SE=rhohat.M2.SE,#
+       sigma2hat=sigma2hat,sigma2hat.M1=sigma2hat.M1,sigma2hat.M2=sigma2hat.M2,#
+#       sigma2hat.SE=sigma2hat.SE,sigma2hat.M1.SE=sigma2hat.M1.SE,sigma2hat.M2.SE=sigma2hat.M2.SE,#
+       N=attr(dati,"dim")[1],T=(attr(dati,"dim")[2])-1,rho=attr(dati,"rho"),sigma2=attr(dati,"sigma2"),#
+       mu=attr(dati,"mu"),t0=dati[,1,1],seed=attr(dati,"seed"))#
+}#
+# prova#
+y1=AR.gen.dati(rho=0.9,sigma2=1,mu=rnorm(250, mean=1, sd=1),y0=rep(0,250),T=4,Nsim=2000,seed=321)#
+risultatiR509=AR.simula(y1)
+sum09R5.4250<-summary.sim(risultatiR509, conf.level=0.95)
+sum09R5.4250
+res09R5.4250<-risultatiR509
+save(res09R5.4250, sum09R5.4250, file="res09-4.250R5.Rdata")
+AR.simula <- function(dati)#
+{#
+  # computes rhohat, sigma2hat, rhohatM1, sigma2hatM1, rhohatM2, sigma2hatM2                    R? seed?#
+  # and corresponding standard errors (SE)#
+  require(numDeriv)  # necessary for numerical derivatives (for SE)#
+  N=dim(dati)[1]#
+  T=dim(dati)[2]-1#
+  Nsim=dim(dati)[3]#
+  # prepare output vectors#
+  rhohat <- rhohat.M1 <- rhohat.M2 <- rep(NA,Nsim)#
+  sigma2hat <- sigma2hat.M1 <- sigma2hat.M2 <- rep(NA,Nsim)#
+  rhohat.SE <- rhohat.M1.SE <- rhohat.M2.SE <- rep(NA,Nsim)#
+ # sigma2hat.SE <- sigma2hat.M1.SE <- sigma2hat.M2.SE <- rep(NA,Nsim)#
+  for (i in 1:Nsim)#
+  {#
+    # i-th dataset (Nx(T+1))#
+    dati.i=dati[,,i]#
+    if (i%%100 ==0) print(i) # monitor progress (just to check initially)#
+    ## compute mle and modified mle (two versions) and save them#
+    ## in the i-th position of the vectors defined above#
+    ## same for the SE#
+    ## NOTE: for ordinary mle, the estimates are analytical;#
+    ## the same would be true for the observed information;#
+    ## however, we can obtain numerically the hessian of nloglP#
+    ## in the estimates#
+    ## we do the same with MPL's#
+    # example (mle):#
+    mle<-ar.mle(dati.i)#
+    mu.hat=mle$muhat#
+    r.hat=mle$rhohat#
+    s2.hat=mle$sigma2hat#
+    Jhat=hessian(nloglP,x=r.hat,data=dati.i)#
+    se=as.numeric(1/Jhat)^0.5#
+    #se=diag(solve(Jhat))^0.5#
+    rhohat[i]=r.hat#
+    sigma2hat[i]=s2.hat#
+    rhohat.SE[i]=se#
+    #rhohat.SE[i]=se[1]#
+    #sigma2hat.SE[i]=se[2]#
+    # must do the same for MPL1 and MPL2 (mle would be numerical)#
+    ybar.0<-apply(dati.i, 1, function(y) mean(y[1:T]))#
+    #MPL1#
+    #mle.M1<-nlm(nloglPM1, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    mle.M1<-optimize(nloglPM1, c(-1.5,1.5), data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)#
+    # rhohat.M1[i]=mle.M1$estimate#
+    # sigma2hat.M1[i]=SS.rho(mle.M1$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M1.SE[i]=as.numeric(1/mle.M1$hessian)^0.5#
+    rhohat.M1[i]=mle.M1$minimum#
+    sigma2hat.M1[i]=SS.rho(mle.M1$minimum,dati.i)/(N*(T-1))#
+    rhohat.M1.SE[i]=hessian(nloglPM1,mle.M1$minimum,data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat)^(-0.5)#
+    #sigma2hat.M1.SE[i]=se.M1[2]#
+    #MPL2#
+    # mle.M2<-nlm(nloglPM2, r.hat, data=dati.i, ybar0=ybar.0, psi.hat=c(r.hat, s2.hat), mu.hat=mu.hat, hessian=T)#
+    # rhohat.M2[i]=mle.M2$estimate#
+    # sigma2hat.M2[i]=SS.rho(mle.M2$estimate,dati.i)/(N*(T-1))#
+    # rhohat.M2.SE[i]=as.numeric(1/mle.M2$hessian)^0.5#
+    #sigma2hat.M2.SE[i]=se.M2[2]#
+  }#
+  list(rhohat=rhohat,rhohat.M1=rhohat.M1,rhohat.M2=rhohat.M2,#
+       rhohat.SE=rhohat.SE,rhohat.M1.SE=rhohat.M1.SE,rhohat.M2.SE=rhohat.M2.SE,#
+       sigma2hat=sigma2hat,sigma2hat.M1=sigma2hat.M1,sigma2hat.M2=sigma2hat.M2,#
+#       sigma2hat.SE=sigma2hat.SE,sigma2hat.M1.SE=sigma2hat.M1.SE,sigma2hat.M2.SE=sigma2hat.M2.SE,#
+       N=attr(dati,"dim")[1],T=(attr(dati,"dim")[2])-1,rho=attr(dati,"rho"),sigma2=attr(dati,"sigma2"),#
+       mu=attr(dati,"mu"),t0=dati[,1,1],seed=attr(dati,"seed"))#
+}
+y1=AR.gen.dati(rho=0.5,sigma2=1,mu=rnorm(1000, mean=1, sd=1),y0=rep(0,250),T=4,Nsim=2000,seed=321)#
+risultatiR5=AR.simula(y1)
+y1=AR.gen.dati(rho=0.5,sigma2=1,mu=rnorm(1000, mean=1, sd=1),y0=rep(0,1000),T=4,Nsim=2000,seed=321)#
+risultatiR5=AR.simula(y1)
+res05R5.41000<-risultatiR5
+sum05R5.41000<-summary.sim(risultatiR5, conf.level=0.95)
+sum05R5.41000
+save(res05R5.41000, sum05R5.41000, file="res05-4.1000R5.Rdata")
+y1=AR.gen.dati(rho=0.9,sigma2=1,mu=rnorm(1000, mean=1, sd=1),y0=rep(0,1000),T=4,Nsim=2000,seed=321)#
+risultatiR5=AR.simula(y1)
+sum09R5.41000<-summary.sim(risultatiR5, conf.level=0.95)
+sum09R5.41000
+summary.sim <- function(risultati, conf.level=c(0.9,0.95,0.99))#
+{#
+	#summary for object of class "sim"#
+#
+	#estimator's biases#
+	biasmler <- risultati$rhohat - risultati$rho                #bias rho MLE#
+	biasmles <- risultati$sigma2hat - risultati$sigma2           #bias sigma2 MLE#
+	biasmlerM1 <- risultati$rhohat.M1 - risultati$rho#
+	biasmlesM1 <- risultati$sigma2hat.M1 - risultati$sigma2#
+	biasmlerM2 <- risultati$rhohat.M2 - risultati$rho#
+	biasmlesM2 <- risultati$sigma2hat.M2 - risultati$sigma2#
+	out1 <- rbind(c(mean(biasmler),median(biasmler)),c(mean(biasmlerM1),median(biasmlerM1)),c(mean(biasmlerM2),median(biasmlerM2)))#
+	out2 <- rbind(c(mean(biasmles),median(biasmles)),c(mean(biasmlesM1),median(biasmlesM1)),c(mean(biasmlesM2),median(biasmlesM2)))#
+	out1 <- data.frame(out1)#
+	out2 <- data.frame(out2)#
+	names(out1) <- names(out2) <- c("BIAS","Median BIAS")#
+	row.names(out1) <- c('ML','MPL-1','MPL-2')#
+	row.names(out2) <- c('ML','MPL-1','MPL-2')#
+#
+	# simulation standard errors#
+	sim.sd <- c(sd(risultati$rhohat),sd(risultati$rhohat.M1),sd(risultati$rhohat.M2),sd(risultati$sigma2hat),sd(risultati$sigma2hat.M1),sd(risultati$sigma2hat.M2))#
+#
+	# average standard errors#
+	mean.sd <- c(mean(risultati$rhohat.SE, na.rm=T),mean(risultati$rhohat.M1.SE, na.rm=T),#
+	             mean(risultati$rhohat.M2.SE, na.rm=T))#
+  #,mean(risultati$sigma2hat.SE),mean(risultati$sigma2hat.M1.SE),mean(risultati$sigma2hat.M2.SE))#
+	# square root of MSE and MAE#
+	rmse <- c(sqrt(mean(biasmler^2)),sqrt(mean(biasmlerM1^2)),sqrt(mean(biasmlerM2^2)),sqrt(mean(biasmles^2)),sqrt(mean(biasmlesM1^2)),sqrt(mean(biasmlesM2^2)))#
+	mae <- c(median(abs(biasmler)),median(abs(biasmlerM1)),median(abs(biasmlerM2)),median(abs(biasmles)),median(abs(biasmlesM1)),median(abs(biasmlesM2)))#
+	out1 <- data.frame(out1,SD=sim.sd[1:3],RMSE=rmse[1:3],MAE=mae[1:3],SE.SD=mean.sd[1:3]/sim.sd[1:3])#
+	out2 <- data.frame(out2,SD=sim.sd[4:6],RMSE=rmse[4:6],MAE=mae[4:6])#
+  #,SE.SD=mean.sd[4:6]/sim.sd[4:6])#
+#	# coverage of confidence region for (rho,delta,lsigma2) based on LRT#
+#	W.coverage <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp<qchisq(x,2))),sapply(conf.level, function(x) mean(risultati$Wpm<qchisq(x,2))))#
+#	colnames(W.coverage) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage) <- c('nominal','Wp','Wm')#
+#	W.coverage <- data.frame(W.coverage)#
+#	#
+#	# coverage of confidence interval for rho, delta and lsigma2 based on LRT#
+#	W.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) mean(risultati$Wp.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wp.lsigma2<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.rho<qchisq(x,1))),sapply(conf.level, function(x) mean(risultati$Wpm.lsigma2<qchisq(x,1))))#
+#	colnames(W.coverage.prof) <- paste('conf',conf.level,sep='')#
+#	rownames(W.coverage.prof) <- c('nominal','rhohat','lsigma2hat','rhohatM','lsigma2hatM')#
+#	W.coverage.prof <- data.frame(W.coverage.prof)#
+	# coverage of WALD confidence intervals for rho and sigma2 #
+	Wald.coverage.prof <- rbind(conf.level,sapply(conf.level, function(x) #
+	  mean((risultati$rhohat-risultati$rho)^2/risultati$rhohat.SE^2<qchisq(x,1), na.rm=T)),#
+	  sapply(conf.level, function(x) mean((risultati$rhohat.M1-risultati$rho)^2/#
+	                                        risultati$rhohat.M1.SE^2<qchisq(x,1), na.rm=T)),#
+	  sapply(conf.level, function(x) mean((risultati$rhohat.M2-risultati$rho)^2/#
+	                                        risultati$rhohat.M2.SE^2<qchisq(x,1), na.rm=T)))#
+  #,sapply(conf.level, function(x) mean((risultati$sigma2hat-risultati$sigma2)^2/risultati$sigma2hat.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M1-risultati$sigma2)^2/risultati$sigma2hat.M1.SE^2<qchisq(x,1))),sapply(conf.level, function(x) mean((risultati$sigma2hat.M2-risultati$sigma2)^2/risultati$sigma2hat.M2.SE^2<qchisq(x,1))))#
+	colnames(Wald.coverage.prof) <- paste('conf',conf.level,sep='')#
+	rownames(Wald.coverage.prof) <- c('nominal','rhohat','rhohatM1','rhohatM2')#
+  #,'sigma2hat','sigma2hatM1','sigma2hatM2')#
+	Wald.coverage.prof <- data.frame(Wald.coverage.prof)#
+   # bias and rmse percentage gains#
+#   biaspercr <- (out1$BIAS[1]-out1$BIAS[2])/(out1$BIAS[1]-out1$BIAS[3])   #
+#   rmsepercr <- (out1$RMSE[1]-out1$RMSE[2])/(out1$RMSE[1]-out1$RMSE[3])#
+#   biaspercs <- (out2$BIAS[1]-out2$BIAS[2])/(out2$BIAS[1]-out2$BIAS[3])   #
+#   rmsepercs <- (out2$RMSE[1]-out2$RMSE[2])/(out2$RMSE[1]-out2$RMSE[3])#
+list(rho=out1,sigma2=out2,Wald.coverage.p=Wald.coverage.prof)#
+}
+sum09R5.41000<-summary.sim(risultatiR5, conf.level=0.95)
+sum09R5.41000
+str(risultatiR5)
+sum(is.na(risultatiR5$rhohat.M1.SE))
+ls()
+sum(is.na(res05R5.41000$rhohat.M1.SE))
+sum(is.na(res05R5.41000$rhohat.M1))
+sum(is.na(res05R5.4250$rhohat.M1.SE))
+sum09R5.41000
+res09R5.41000<-risultatiR5
+save(res09R5.41000, sum09R5.41000, file="res09-4.1000R5.Rdata")
