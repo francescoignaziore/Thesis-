@@ -4,7 +4,7 @@
 %% ---------------------------------------------------------------- 
 
 % Set up the document
-\documentclass[a4paper, 12pt, twosided]{Thesis}  % Use the "Thesis" style, based on the ECS Thesis style by Steve Gunn
+\documentclass[a4paper, 14pt, twosided]{Thesis}  % Use the "Thesis" style, based on the ECS Thesis style by Steve Gunn
 \graphicspath{{Figures/}}  % Location of the graphics files (set up for graphics to be in PDF format)
 \usepackage{multicol}
 % Include any extra LaTeX packages required
@@ -144,98 +144,106 @@ Dipartimento di Scienze Statistiche\\
 
 
 
-\pagestyle{empty}  % Page style needs to be empty for this page
+%\pagestyle{empty}  % Page style needs to be empty for this page
 
 
 %%----------------------------------------------------------------
 
 %%%%%%%%%%%%%%%%%%%%%%% Abstarct %%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%\btypeout{Abstract Page}
+%  \null\vspace{4cm}
+%  \begin{center}
+%    \setlength{\parskip}{0pt}
+%    {\huge{{\textbf{Abstract}}} \par}
+%        \bigskip
+%        \end{center}
+%        
+%
+%%        --- Draft ---
+%%Generalized linear models are a powerful tool in statistical analysis for modeling data whose distribution belongs to the exponential family. However, even though they widen the class of doable problems, overcoming the necessity of normally distributed observations, they still set a few limitations, being themselves based on the maximum likelihood method, and hence, on the specification of an a-priori settled model.These constraints may present an obstacle when working with data whose variability is not well represented by the one assumed in the model.
+%%
+%%
+%\Large Statistical analysis is a process that can be broken into several steps. 
+%From data collection, through data analysis, up to the yielding of consistent results, statisticians are continuously asked to come down to compromises in the attempt of tackling the underlying trends of their object of study. 
+%Among these steps, the greatest controversy is probably bound to the choice of the model: a bitter truth known to every statistician is that there is no such a thing as a best model. With that said, it is still reasonable to search - if not for the best - for a better model and, in this respect, several indexes were built for comparing different models with each other. %and to attest, mathematically, the superiority of a model over another.  WHAT ARE THE TERMS OF THE COMPARISON
+%A particularly powerful index is the Akaike's information criterion, comparing models in terms of predictability and parsimony. %for a given model, it maximizes the double difference between the likelihood function of the model and the number of parameters. 
+%Despite being a powerful tool, its strict dependence on the likelihood function implies that the model distribution must be fully known: a requirement that cannot be always fulfilled. In this context, this work sets its aim at assessing methods to widen the AIC usage to those models that are not based on the maximum likelihood. We will specifically focus our attention on the Akaike's information criterion for models that exploit the quasi-likelihood method. These models can be considered as a further generalization of the generalized linear models.
+%
+%% We will specifically focus our attention on those models that meet the assumptions for quasi-likelihood inference.
+%
+%
+%
+%
+%
+%
+%
+%
+%\pagestyle{empty}  % Page style needs to be empty for this page
+%\cleardoublepage
+%\pagestyle{plain}
+%%% ----------------------------------------------------------------
+%
+%\newpage
+%\thispagestyle{empty}
+%\mbox{}
+%
+%%%%%%%%%%%%%%%%%%%%%%%% Put Sommario here %%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%\pagestyle{empty}
+%\btypeout{Abstract Page}
+%  \null\vspace{3cm}
+%  \begin{center}
+%    \setlength{\parskip}{0pt}
+%    {\huge{{\textbf{Sommario}}} \par}
+%        \bigskip
+%        \end{center}
+%\selectlanguage{italian}
+%Contenuto del sommario.
+%
+%
+%\selectlanguage{english}
+%
+%% Sommario ended, start a new page
+%\newpage
+%\thispagestyle{empty}
+%\mbox{}
+%
+%
+%\newpage
+%\thispagestyle{empty}
+%\mbox{}
+%
+%\topskip0pt
+%\vspace*{4cm}
+%\begin{flushright}
+%	\textit{\Large{{Dedication}}}
+%\end{flushright}
+%\vspace*{\fill}
+%
+%
+%\newpage
+%\thispagestyle{empty}
+%\mbox{}
+%
+%\newpage
+%\thispagestyle{empty}
+%\mbox{}
+%
+%\thispagestyle{empty}
+%\btypeout{Abstract Page}
+%
+%  \begin{center}
+%    \setlength{\parskip}{0pt}
+%    {\huge{\textbf{Acknowledgements}} \par}
+%        \bigskip
+%        \end{center}
+%{ Acknowledgements content.}
 
-\btypeout{Abstract Page}
-  \null\vspace{4cm}
-  \begin{center}
-    \setlength{\parskip}{0pt}
-    {\huge{{\textbf{Abstract}}} \par}
-        \bigskip
-        \end{center}
-        
-
-        --- Draft ---
-Generalized linear models are a powerful tool in statistical analysis for modeling data whose distribution belongs to the exponential family. However, even though they widen the class of doable problems, overcoming the necessity of normally distributed observations, they still set a few limitations, being themselves based on the maximum likelihood method, and hence, on the specification of an a-priori settled model.These constraints may present an obstacle when working with data whose variability is not well represented by the one assumed in the model.
-
-
-
-
-
-
-
-
-
-\pagestyle{empty}  % Page style needs to be empty for this page
-\cleardoublepage
-\pagestyle{plain}
-%% ----------------------------------------------------------------
 
 \newpage
-\thispagestyle{empty}
-\mbox{}
-
-%%%%%%%%%%%%%%%%%%%%%%% Put Sommario here %%%%%%%%%%%%%%%%%%%%%%%%%
-
-\pagestyle{empty}
-\btypeout{Abstract Page}
-  \null\vspace{3cm}
-  \begin{center}
-    \setlength{\parskip}{0pt}
-    {\huge{{\textbf{Sommario}}} \par}
-        \bigskip
-        \end{center}
-\selectlanguage{italian}
-Contenuto del sommario.
-
-
-\selectlanguage{english}
-
-% Sommario ended, start a new page
-\newpage
-\thispagestyle{empty}
-\mbox{}
-
-
-\newpage
-\thispagestyle{empty}
-\mbox{}
-
-\topskip0pt
-\vspace*{4cm}
-\begin{flushright}
-	\textit{\Large{{Dedication}}}
-\end{flushright}
-\vspace*{\fill}
-
-
-\newpage
-\thispagestyle{empty}
-\mbox{}
-
-\newpage
-\thispagestyle{empty}
-\mbox{}
-
-\thispagestyle{empty}
-\btypeout{Abstract Page}
-
-  \begin{center}
-    \setlength{\parskip}{0pt}
-    {\huge{\textbf{Acknowledgements}} \par}
-        \bigskip
-        \end{center}
-{ Acknowledgements content.}
-
-
-\newpage
-\thispagestyle{empty}
-\mbox{}
+%\thispagestyle{empty}
+%\mbox{}
 
 
 \fancyhead[LE]{\thepage}
@@ -250,32 +258,32 @@ Contenuto del sommario.
 \mbox{}
 
 %%----------------------------------------------------------------
-
-
-
- \cleardoublepage\phantomsection
- \fancyhead[RO,LE]{\thepage}
- \fancyhead[RE]{List of Figures}
- \fancyhead[LO]{List of Figures}
- \pagestyle{fancy}
-
-\listoffigures  % Write out the List of Figures
-\clearpage
-\pagestyle{empty}
+%
+%
+%
+% \cleardoublepage\phantomsection
+% \fancyhead[RO,LE]{\thepage}
+% \fancyhead[RE]{List of Figures}
+% \fancyhead[LO]{List of Figures}
+% \pagestyle{fancy}
+%
+%\listoffigures  % Write out the List of Figures
+%\clearpage
+%\pagestyle{empty}
 %%----------------------------------------------------------------
 
-
-\clearpage\phantomsection
-\fancyhead[RO,LE]{\thepage}
-\fancyhead[RE]{List of Tables}
-\fancyhead[LO]{List of Tables}
-\pagestyle{fancy}
-
-\listoftables  % Write out the List of Tables
-
-\clearpage\phantomsection
-\pagestyle{empty}
-
+%
+%\clearpage\phantomsection
+%\fancyhead[RO,LE]{\thepage}
+%\fancyhead[RE]{List of Tables}
+%\fancyhead[LO]{List of Tables}
+%\pagestyle{fancy}
+%
+%\listoftables  % Write out the List of Tables
+%\\
+%\clearpage\phantomsection
+%\pagestyle{empty}
+%
 
 %%----------------------------------------------------------------
 \addtocontents{toc}{\vspace{1em}}
@@ -331,9 +339,9 @@ Contenuto del sommario.
 \mbox{}
 
 \pagestyle{empty}
-\includepdf[pages={1}, scale=1, offset=-3cm -2cm]{CVthesis/cv.pdf}
-\includepdf[pages={2}, scale=1, offset=-1.75cm -1.2cm]{CVthesis/cv.pdf}
-\includepdf[pages={3}, scale=1, offset=3cm -2cm]{CVthesis/cv.pdf}
-\includepdf[pages={4}, scale=1, offset=-1.75cm -1.2cm]{CVthesis/cv.pdf}
+%\includepdf[pages={1}, scale=1, offset=-3cm -2cm]{CVthesis/cv.pdf}
+%\includepdf[pages={2}, scale=1, offset=-1.75cm -1.2cm]{CVthesis/cv.pdf}
+%\includepdf[pages={3}, scale=1, offset=3cm -2cm]{CVthesis/cv.pdf}
+%\includepdf[pages={4}, scale=1, offset=-1.75cm -1.2cm]{CVthesis/cv.pdf}
 \end{document}  % The End
 %%----------------------------------------------------------------
