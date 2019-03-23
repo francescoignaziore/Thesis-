@@ -1,5 +1,5 @@
 % Chapter 1
-\chapter{ Models based on Maximum Likelihood Estimation}
+\chapter{ Models based on Maximum Likelihood Estimation }
 
 \fancyhead[RO,LE]{\thepage}
 \fancyhead[LO]{Chapter 1 - \emph{Title of chapter}}
@@ -8,9 +8,58 @@
 \setlength{\parskip}{0.5pt}
 
 \bigskip
+\section{Introduction}
+\large In this chapter, we will first introduce the likelihood function along with its main properties. We will then briefly discuss Linear Models (LM) and Generalized Linear Models (GLM), as being two classes of models that use the likelihood function for the estimation of their parameters of interest. The information herein provided is referenced from ... ... ... %"Likelihood Methods in Statistics" "Thomas A. Severini"
 
 \section{Likelihood} 
+\subsection{Model Specification}
+
+The aim of statistical inference is to gain insight regarding the underlying distribution of a phenomenon of interest $Y$, given that we have access to a limited sample of observations of $Y$, $(y_1,y_2,...,y_n)$. Assuming that $Y$ is defined by the parametric density function $f(y,\theta_0)$, with $\theta_0$ being the only unknown component of $f(\cdot)$, then our goal is to draw conclusions regarding the value $\theta_0$, using the information embedded in the sample $(y_1,y_2,...,y_n)$. In this way, we restrict our interest on a precise family of distributions to which we refer to as our model of interest. Formally, we define a parametric model $\mathcal{F}$ as
+
+$$ \mathcal{F} = \{ f(y;\theta): \theta \in \Theta \subseteq	{\mathbb{R}}^p \} $$
+
+with $p \in {\mathbb{N}}^+$ and $\Theta$ being the parametric space, namely the space containing all the possible values of $\theta$ and, indeed, ${\theta}_0$ itself.
+
+
+
+
+
+ 
 \noindent
+
+\subsection{Likelihood Function}
+The concept of likelihood is at the very core of traditional statistical inference. The term was firstly used by Fisher, in 1921, and defined as follows:
+
+\bigskip
+
+\textit{The likelihood that any parameter (or set of parameters) should have any assigned value (or set of values) is proportional to the probability that if this were so, the totality of observations should be that observed.} 
+
+\bigskip
+In other words, it establishes a method to discriminate among different values of $\theta$, considering for each $\theta \in \Theta$ the values assumed by the density function conditioned to the sample $(y_1,y_2, ... , y_n)$.
+Assuming the model $\mathcal{F}$ with density function $f(y,\theta)$ to be correct for the sample $(y_1,y_2, ... , y_n)$ , we can then define the likelihood function $L : \Theta \rightarrow {\mathbb{R}}^p$ as 
+
+$$L(\theta) = L(\theta;y) = c(y)f(y;\theta), $$
+
+with $c(y)$ being a function of the data, independent from the parameter. With respect to the model $\mathcal{F}$, the likelihood is a class of functions equivalent to each other, and differing only for the component $c(y)$. If the observations $(y_1,...,y_n)$ are independent and identically distributed, then the likelihood function  is simply the product of the individual densities, thus can be expressed as
+
+$$L(\theta) = \prod_{i=1}^{i=n} f_{Y_i}(y_i,\theta),$$
+
+with $f_{Y_i}(y_i,\theta)$ being the density function of the random variable $Y_i$, generator of the $i$-th observation, $y_i$, of the sample $(y_1,...,y_n)$.
+
+For a more straightforward approach in calculations, we usually operate with the natural logarithm of the likelihood function: being the natural logarithm a monotonically increasing transformation, it does not alter the information embedded in the data, while still providing a much more manageable form.
+We then define the log-likelihood as 
+
+$$l(\theta) = l(\theta; y) =$$ log$$L(\theta; y)$$
+
+In the case of independent and identically distributed observations, the log-likelihood would be
+
+$$ l(\theta) = \sum_{i=1}^{i=n} l(\theta;y_i)$$
+
+
+
+
+
+
 
 \section{Linear Models}
 \noindent
