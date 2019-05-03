@@ -1,6 +1,3 @@
 # Tesi-
 
--Introduction 
--Contents 
-
-(file .pdf)
+aprire file.pdf
